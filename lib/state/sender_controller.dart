@@ -9,6 +9,7 @@ import '../core/device.dart';
 import '../core/log.dart';
 import '../core/prefs.dart';
 import '../media/library.dart';
+import '../media/url_source.dart';
 import '../model/protocol.dart';
 import '../net/discovery.dart';
 import '../net/host_server.dart';
@@ -133,7 +134,7 @@ class SenderController extends ChangeNotifier {
 
   void _saveResume() {
     final m = _media;
-    if (m == null || _snapshot.durationMs <= 0) return;
+    if (m == null || _snapshot.durationMs <= 0 || _snapshot.live) return;
     // Don't "resume" the last few seconds of a film.
     final atEnd = _snapshot.positionMs > _snapshot.durationMs - 15000;
     unawaited(Prefs.instance.setResumeFor(m.path, atEnd ? 0 : _snapshot.positionMs));
@@ -178,6 +179,7 @@ class SenderController extends ChangeNotifier {
       title: p.basenameWithoutExtension(path),
       path: path,
       size: await file.length(),
+      kind: MediaKind.file,
       mime: mimeForPath(path),
       subtitles: subs,
     );
@@ -202,6 +204,45 @@ class SenderController extends ChangeNotifier {
     ));
     _server.send(CastCommand.subStyle(_style));
     if (delay != 0) _server.send(CastCommand.subDelay(delay));
+    notifyListeners();
+  }
+
+  /// Casts a pasted link — a direct video URL, a live stream manifest or a
+  /// YouTube video. Nothing is downloaded or proxied through the phone: the
+  /// TV fetches it itself, so quality is limited by the TV's connection
+  /// rather than by a round trip through here.
+  Future<void> castLink(UrlSource source) async {
+    if (!_server.running) await start();
+
+    final media = CastMedia(
+      id: _idFor(source.url),
+      title: source.title,
+      path: source.url,
+      size: 0,
+      kind: source.kind,
+      youtubeId: source.youtubeId,
+    );
+    _media = media;
+    _server.publish(media);
+    unawaited(Prefs.instance.rememberLink(source.url));
+
+    // A timestamped link wins; then our own resume point; a live stream
+    // always starts at the edge.
+    final startMs = switch (source.kind) {
+      MediaKind.adaptive => 0,
+      _ when source.startAt > Duration.zero => source.startAt.inMilliseconds,
+      _ => Prefs.instance.resumeFor(source.url),
+    };
+
+    _snapshot = PlayerSnapshot(
+      title: media.title,
+      positionMs: startMs,
+      style: _style,
+      kind: source.kind,
+    );
+
+    _server.send(CastCommand.load(media, startMs: startMs));
+    _server.send(CastCommand.subStyle(_style));
     notifyListeners();
   }
 
@@ -364,6 +405,9 @@ class SenderController extends ChangeNotifier {
       style: style ?? s.style,
       subs: s.subs.isEmpty ? subtitles : s.subs,
       receiver: s.receiver,
+      live: s.live,
+      kind: s.kind,
+      quality: s.quality,
     );
   }
 

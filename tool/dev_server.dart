@@ -3,6 +3,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:lan_cast/media/url_source.dart';
 import 'package:lan_cast/model/protocol.dart';
 import 'package:lan_cast/net/host_server.dart';
 
@@ -49,6 +50,24 @@ Future<void> main(List<String> args) async {
       case 'load':
         server.send(CastCommand.load(media, startMs: (msg['at'] as num?)?.toInt() ?? 0, subId: 's1'));
         server.send(CastCommand.subStyle(const SubtitleStyleSpec(sizePx: 40, bottomPct: 8)));
+      case 'link':
+        // Mirrors SenderController.castLink for a pasted URL.
+        final source = UrlSource.parse(msg['url']! as String);
+        if (source == null) {
+          stdout.writeln(jsonEncode({'linkError': msg['url']}));
+          break;
+        }
+        final remote = CastMedia(
+          id: 'r1',
+          title: source.title,
+          path: source.url,
+          size: 0,
+          kind: source.kind,
+          youtubeId: source.youtubeId,
+        );
+        server.publish(remote);
+        stdout.writeln(jsonEncode({'linkKind': source.kind.name}));
+        server.send(CastCommand.load(remote));
       case 'pause':
         server.send(CastCommand.pause);
       case 'play':

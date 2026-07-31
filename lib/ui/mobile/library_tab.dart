@@ -12,6 +12,7 @@ import '../../media/library.dart';
 import '../../state/scope.dart';
 import '../common/glass.dart';
 import 'connect_sheet.dart';
+import 'link_sheet.dart';
 
 /// Browse the phone's storage and cast a file with one tap.
 class LibraryTab extends StatefulWidget {
@@ -166,6 +167,50 @@ class _LibraryTabState extends State<LibraryTab> with WidgetsBindingObserver {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
         children: [
+          GlassPanel(
+            strong: true,
+            glow: Sea.azure,
+            radius: Sea.radiusSm,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            onTap: () async {
+              if (await showLinkSheet(context) == true) widget.onCastStarted();
+            },
+            child: Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(11),
+                    gradient: Sea.accentGradient,
+                  ),
+                  child: const Icon(Icons.link_rounded, size: 19, color: Sea.abyss),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'پخش از لینک',
+                        style: TextStyle(
+                          color: Sea.text,
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        'یوتیوب • پخش زنده • آدرس مستقیم',
+                        style: TextStyle(color: Sea.textFaint, fontSize: 11.5),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_left_rounded, color: Sea.textFaint, size: 22),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
           _PathBar(
             folder: _folder,
             canGoUp: canGoUp,

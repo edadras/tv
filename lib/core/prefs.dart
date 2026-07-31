@@ -39,6 +39,21 @@ class Prefs {
   String? get lastFolder => _store.getString('lastFolder');
   Future<void> setLastFolder(String v) => _store.setString('lastFolder', v);
 
+  /// Recently cast links, newest first, capped so the list stays useful.
+  List<String> get recentLinks => _store.getStringList('recentLinks') ?? const [];
+
+  Future<void> rememberLink(String url) async {
+    final list = [url, ...recentLinks.where((u) => u != url)].take(12).toList();
+    await _store.setStringList('recentLinks', list);
+  }
+
+  Future<void> forgetLink(String url) async {
+    await _store.setStringList(
+      'recentLinks',
+      recentLinks.where((u) => u != url).toList(),
+    );
+  }
+
   SubtitleStyleSpec get subtitleStyle {
     final raw = _store.getString('subStyle');
     if (raw == null) return const SubtitleStyleSpec();

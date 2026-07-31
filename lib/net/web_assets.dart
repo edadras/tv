@@ -54,6 +54,19 @@ class WebAssets {
   video.live{opacity:1}
   video.cover{object-fit:cover} video.stretch{object-fit:fill}
 
+  /* YouTube plays through its own embedded player, so it gets its own layer. */
+  #yt{position:absolute;inset:0;display:none;background:#000}
+  #yt.live-embed{display:block}
+  #yt iframe{width:100%;height:100%;border:0}
+
+  .live{display:none;align-items:center;gap:7px;font-size:clamp(13px,1.1vw,20px);
+    font-weight:800;color:#ff6b7a}
+  .live.on{display:inline-flex}
+  .live i{width:.62em;height:.62em;border-radius:50%;background:#ff6b7a;
+    box-shadow:0 0 10px #ff6b7a;animation:blip 1.1s ease-in-out infinite}
+  @keyframes blip{50%{opacity:.3}}
+  #seek.hidden{visibility:hidden}
+
   /* ---- subtitles: rendered by us so the sync offset is exact ---- */
   #subs{
     position:fixed;left:5%;right:5%;bottom:6%;text-align:center;
@@ -141,7 +154,10 @@ class WebAssets {
 </head>
 <body>
 
-<div id="stage"><video id="v" playsinline preload="metadata"></video></div>
+<div id="stage">
+  <video id="v" playsinline preload="metadata"></video>
+  <div id="yt"></div>
+</div>
 <div id="subs"></div>
 <div class="spin" id="spin"></div>
 
@@ -150,6 +166,7 @@ class WebAssets {
 <div class="glass idle" id="bar">
   <div class="row">
     <div class="title" id="title">آماده‌ی پخش</div>
+    <span class="live" id="live"><i></i>پخش زنده</span>
     <span class="time" id="time">00:00 / 00:00</span>
   </div>
   <input type="range" id="seek" min="0" max="1000" value="0" step="1">
@@ -192,7 +209,7 @@ class WebAssets {
   const state = {
     started:false, cues:[], cursor:0, subId:null, delay:0, subs:[], title:'',
     fit:'contain', style:{size:34,color:0xFFFFFFFF,backdrop:.35,outline:true,bottom:6,bold:true},
-    seeking:false, media:null,
+    seeking:false, media:null, kind:'file',
   };
   let ws = null, retry = 0;
 
@@ -274,27 +291,137 @@ class WebAssets {
     paintSubs();
   }
 
+  // ---------- YouTube (official embedded player) ----------
+  // The stream is never pulled out of a YouTube page: that breaks their terms
+  // and breaks in practice. The embed also handles its own bitrate ladder,
+  // which is the adaptive behaviour we want anyway.
+  let ytPlayer = null, ytReady = false, ytApiLoading = false;
+
+  function loadYtApi(){
+    return new Promise((resolve) => {
+      if (window.YT && window.YT.Player) return resolve();
+      if (!ytApiLoading) {
+        ytApiLoading = true;
+        const tag = document.createElement('script');
+        tag.src = 'https://www.youtube.com/iframe_api';
+        document.head.appendChild(tag);
+      }
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = function(){ if (prev) prev(); resolve(); };
+      // If the TV has no internet the API never arrives; don't hang forever.
+      setTimeout(resolve, 8000);
+    });
+  }
+
+  async function mountYouTube(videoId, startSec){
+    await loadYtApi();
+    if (!window.YT || !window.YT.Player) {
+      toast('دسترسی به یوتیوب ممکن نشد');
+      return;
+    }
+    teardownYouTube();
+    $('yt').classList.add('live-embed');
+    V.classList.remove('live');
+    const holder = document.createElement('div');
+    $('yt').appendChild(holder);
+    ytReady = false;
+    ytPlayer = new YT.Player(holder, {
+      videoId: videoId,
+      playerVars: {
+        autoplay: 1, playsinline: 1, rel: 0, modestbranding: 1,
+        controls: 0, iv_load_policy: 3, start: Math.floor(startSec || 0)
+      },
+      events: {
+        onReady: (e) => { ytReady = true; e.target.playVideo(); },
+        onError: () => toast('این ویدیوی یوتیوب پخش نشد')
+      }
+    });
+  }
+
+  function teardownYouTube(){
+    if (ytPlayer && ytPlayer.destroy) { try { ytPlayer.destroy(); } catch(e){} }
+    ytPlayer = null; ytReady = false;
+    $('yt').innerHTML = '';
+    $('yt').classList.remove('live-embed');
+  }
+
+  // ---------- one control surface over both players ----------
+  const onYt = () => !!ytPlayer && ytReady;
+
+  const P = {
+    play(){ onYt() ? ytPlayer.playVideo() : V.play().catch(()=>{}); },
+    pause(){ onYt() ? ytPlayer.pauseVideo() : V.pause(); },
+    paused(){ return onYt() ? ytPlayer.getPlayerState() !== 1 : V.paused; },
+    time(){ return onYt() ? (ytPlayer.getCurrentTime() || 0) : (V.currentTime || 0); },
+    dur(){
+      const d = onYt() ? ytPlayer.getDuration() : V.duration;
+      return isFinite(d) && d > 0 ? d : 0;
+    },
+    seek(sec){
+      const t = Math.max(0, sec);
+      if (onYt()) ytPlayer.seekTo(t, true); else V.currentTime = t;
+    },
+    nudge(delta){ P.seek(P.time() + delta); },
+    rate(v){ onYt() ? ytPlayer.setPlaybackRate(v) : (V.playbackRate = v); },
+    volume(v){
+      const x = Math.max(0, Math.min(1, v));
+      onYt() ? ytPlayer.setVolume(Math.round(x * 100)) : (V.volume = x);
+    },
+    buffered(){
+      if (onYt()) return (ytPlayer.getVideoLoadedFraction() || 0) * P.dur();
+      return V.buffered.length ? V.buffered.end(V.buffered.length - 1) : 0;
+    },
+    quality(){ return onYt() && ytPlayer.getPlaybackQuality ? ytPlayer.getPlaybackQuality() : ''; },
+    // No fixed end: a live feed, so the timeline is meaningless.
+    live(){ return state.media != null && P.dur() === 0 && (onYt() || V.readyState >= 1); },
+  };
+
   // ---------- playback ----------
   function applyMedia(media, startMs, subId){
     state.media = media;
     state.title = media.title || '';
     state.subs = media.subs || [];
+    state.kind = media.kind || 'file';
     $('title').textContent = state.title;
+    hideSplash();
+    $('bar').classList.remove('idle');
+
+    if (state.kind === 'youtube') {
+      // Our subtitle renderer cannot draw over YouTube's own player.
+      state.cues = []; $('subs').innerHTML = '';
+      V.pause(); V.removeAttribute('src'); V.load();
+      mountYouTube(media.yt || ytIdFrom(media.url), (startMs || 0) / 1000);
+      return;
+    }
+
+    teardownYouTube();
     const url = new URL(media.url, location.origin).href;
     if (V.src !== url) { V.src = url; V.load(); }
-    if (startMs) V.currentTime = startMs/1000;
-    loadSub(subId || null);
+    if (startMs) V.currentTime = startMs / 1000;
     V.classList.add('live');
-    $('bar').classList.remove('idle');
-    hideSplash();
+    loadSub(subId || null);
     V.play().catch(() => toast('برای شروع، دکمه‌ی پخش را بزنید'));
+  }
+
+  function ytIdFrom(url){
+    try {
+      const u = new URL(url, location.origin);
+      if (u.hostname.endsWith('youtu.be')) return u.pathname.slice(1);
+      if (u.searchParams.get('v')) return u.searchParams.get('v');
+      const parts = u.pathname.split('/').filter(Boolean);
+      for (const key of ['embed','shorts','live','v']) {
+        const i = parts.indexOf(key);
+        if (i >= 0 && parts[i+1]) return parts[i+1];
+      }
+    } catch(e){}
+    return '';
   }
 
   function hideSplash(){ if (state.started) $('splash').style.display = 'none'; }
 
   function setFit(f){
     state.fit = f;
-    V.className = f === 'contain' ? '' : f;
+    V.className = 'live' + (f === 'contain' ? '' : ' ' + f);
   }
 
   // ---------- websocket ----------
@@ -314,22 +441,23 @@ class WebAssets {
       let m; try { m = JSON.parse(ev.data); } catch(e){ return; }
       switch (m.t) {
         case 'load':    applyMedia(m.media, m.start || 0, m.sub); break;
-        case 'play':    hideSplash(); V.play().catch(()=>{}); break;
-        case 'pause':   V.pause(); break;
-        case 'toggle':  V.paused ? V.play().catch(()=>{}) : V.pause(); break;
-        case 'stop':    V.pause(); V.removeAttribute('src'); V.load();
+        case 'play':    hideSplash(); P.play(); break;
+        case 'pause':   P.pause(); break;
+        case 'toggle':  P.paused() ? P.play() : P.pause(); break;
+        case 'stop':    P.pause(); teardownYouTube();
+                        V.removeAttribute('src'); V.load();
                         V.classList.remove('live'); $('bar').classList.add('idle');
                         state.media=null; state.cues=[]; $('subs').innerHTML='';
                         $('title').textContent='آماده‌ی پخش';
                         $('splash').style.display='flex'; break;
-        case 'seek':    V.currentTime = m.pos/1000; break;
-        case 'nudge':   V.currentTime = Math.max(0, V.currentTime + m.delta/1000); break;
+        case 'seek':    P.seek(m.pos/1000); break;
+        case 'nudge':   P.nudge(m.delta/1000); break;
         case 'sub':     loadSub(m.id); break;
         case 'subDelay':state.delay = m.ms; paintSubs(); toast('تأخیر زیرنویس: ' + (m.ms/1000).toFixed(1) + ' ثانیه'); break;
         case 'subStyle':state.style = m; paintSubs(); break;
         case 'addSub':  state.subs = state.subs.concat([m.sub]); break;
-        case 'rate':    V.playbackRate = m.v; toast('سرعت ' + m.v + '×'); break;
-        case 'volume':  V.volume = Math.max(0, Math.min(1, m.v)); break;
+        case 'rate':    P.rate(m.v); toast('سرعت ' + m.v + '×'); break;
+        case 'volume':  P.volume(m.v); break;
         case 'fit':     setFit(m.v); break;
       }
     };
@@ -337,18 +465,25 @@ class WebAssets {
 
   function report(){
     if (!ws || ws.readyState !== 1) return;
+    const onYoutube = state.kind === 'youtube';
     ws.send(JSON.stringify({
       t:'state',
       title: state.title,
-      pos: Math.round((V.currentTime||0)*1000),
-      dur: Math.round((isFinite(V.duration) ? V.duration : 0)*1000),
-      buf: V.buffered.length ? Math.round(V.buffered.end(V.buffered.length-1)*1000) : 0,
-      playing: !V.paused && !V.ended,
-      buffering: V.readyState < 3 && !V.paused,
-      ready: V.readyState >= 1,
-      sub: state.subId, subDelay: state.delay, rate: V.playbackRate, vol: V.volume,
-      fit: state.fit, style: state.style, subs: state.subs,
+      pos: Math.round(P.time()*1000),
+      dur: Math.round(P.dur()*1000),
+      buf: Math.round(P.buffered()*1000),
+      playing: !P.paused(),
+      buffering: onYoutube ? false : (V.readyState < 3 && !V.paused),
+      ready: onYoutube ? onYt() : V.readyState >= 1,
+      sub: state.subId, subDelay: state.delay,
+      rate: onYoutube ? 1 : V.playbackRate,
+      vol: onYoutube ? 1 : V.volume,
+      fit: state.fit, style: state.style,
+      subs: onYoutube ? [] : state.subs,
       receiver: 'مرورگر تلویزیون',
+      live: P.live(),
+      kind: state.kind,
+      quality: P.quality(),
     }));
   }
 
@@ -356,12 +491,13 @@ class WebAssets {
   const seek = $('seek');
   seek.addEventListener('input', () => { state.seeking = true; });
   seek.addEventListener('change', () => {
-    if (isFinite(V.duration)) V.currentTime = V.duration * (seek.value/1000);
+    const d = P.dur();
+    if (d > 0) P.seek(d * (seek.value/1000));
     state.seeking = false;
   });
-  $('play').onclick = () => { V.paused ? V.play().catch(()=>{}) : V.pause(); };
-  $('back').onclick = () => { V.currentTime = Math.max(0, V.currentTime - 10); };
-  $('fwd').onclick  = () => { V.currentTime = V.currentTime + 10; };
+  $('play').onclick = () => { P.paused() ? P.play() : P.pause(); };
+  $('back').onclick = () => P.nudge(-10);
+  $('fwd').onclick  = () => P.nudge(10);
   $('delayDown').onclick = () => { state.delay -= 500; paintSubs(); toast('تأخیر زیرنویس: ' + (state.delay/1000).toFixed(1) + 'ث'); };
   $('delayUp').onclick   = () => { state.delay += 500; paintSubs(); toast('تأخیر زیرنویس: ' + (state.delay/1000).toFixed(1) + 'ث'); };
   $('fitBtn').onclick = () => {
@@ -374,6 +510,7 @@ class WebAssets {
     else document.documentElement.requestFullscreen?.().catch(()=>{});
   };
   $('subBtn').onclick = () => {
+    if (state.kind === 'youtube') { toast('زیرنویس یوتیوب از خود یوتیوب کنترل می‌شود'); return; }
     const menu = $('menu');
     if (menu.classList.contains('show')) { menu.classList.remove('show'); return; }
     menu.innerHTML = '<h4>زیرنویس</h4>';
@@ -393,7 +530,7 @@ class WebAssets {
   $('startBtn').onclick = async () => {
     state.started = true;
     // A user gesture unlocks autoplay for the rest of the session.
-    try { await V.play(); } catch(e) {}
+    try { state.kind === 'youtube' ? P.play() : await V.play(); } catch(e) {}
     if (state.media) hideSplash(); else toast('حالا از گوشی یک فیلم انتخاب کنید');
     $('splash').style.display = state.media ? 'none' : 'flex';
   };
@@ -416,12 +553,12 @@ class WebAssets {
   // ---------- TV remote / keyboard ----------
   addEventListener('keydown', (e) => {
     const k = e.key;
-    if (k === 'ArrowRight') { V.currentTime += 10; showBar(); e.preventDefault(); }
-    else if (k === 'ArrowLeft') { V.currentTime = Math.max(0, V.currentTime - 10); showBar(); e.preventDefault(); }
-    else if (k === 'ArrowUp') { V.volume = Math.min(1, V.volume + .1); showBar(); }
-    else if (k === 'ArrowDown') { V.volume = Math.max(0, V.volume - .1); showBar(); }
+    if (k === 'ArrowRight') { P.nudge(10); showBar(); e.preventDefault(); }
+    else if (k === 'ArrowLeft') { P.nudge(-10); showBar(); e.preventDefault(); }
+    else if (k === 'ArrowUp') { P.volume((V.volume || 1) + .1); showBar(); }
+    else if (k === 'ArrowDown') { P.volume((V.volume || 1) - .1); showBar(); }
     else if (k === ' ' || k === 'Enter' || k === 'MediaPlayPause') {
-      if (e.target.tagName !== 'BUTTON') { V.paused ? V.play() : V.pause(); showBar(); e.preventDefault(); }
+      if (e.target.tagName !== 'BUTTON') { P.paused() ? P.play() : P.pause(); showBar(); e.preventDefault(); }
     }
     else if (k === 'f') $('fsBtn').click();
     else if (k === ',') $('delayDown').click();
@@ -449,11 +586,13 @@ class WebAssets {
   V.addEventListener('error', () => toast('پخش این فایل ممکن نشد'));
 
   function tick(){
-    if (!state.seeking && isFinite(V.duration) && V.duration > 0) {
-      seek.value = Math.round(1000 * V.currentTime / V.duration);
-    }
-    $('time').textContent = fmt(V.currentTime) + ' / ' + fmt(V.duration);
-    paintSubs();
+    const d = P.dur(), t = P.time();
+    const live = P.live();
+    $('live').classList.toggle('on', live);
+    seek.classList.toggle('hidden', live);
+    if (!state.seeking && d > 0) seek.value = Math.round(1000 * t / d);
+    $('time').textContent = live ? fmt(t) : (fmt(t) + ' / ' + fmt(d));
+    if (state.kind !== 'youtube') paintSubs();
     requestAnimationFrame(tick);
   }
 

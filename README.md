@@ -3,9 +3,9 @@
 <div dir="rtl">
 
 یک اپ فلاتری که هم روی **گوشی اندروید** نصب می‌شود و هم روی **تلویزیون اندرویدی**.
-فیلم را روی گوشی انتخاب می‌کنید و روی تلویزیون پخش می‌شود — با زیرنویس، جلو و عقب بردن،
-مکث، و تنظیم دقیق همگام‌سازی زیرنویس. همه‌چیز روی وای‌فای خانه انجام می‌شود؛
-نه اینترنتی لازم است، نه اکانتی، نه سروری بیرون از خانه.
+فیلم را روی گوشی انتخاب می‌کنید — یا فقط یک **لینک** می‌چسبانید — و روی تلویزیون پخش
+می‌شود؛ با زیرنویس، جلو و عقب بردن، مکث، و تنظیم دقیق همگام‌سازی زیرنویس.
+فایل‌های خودتان روی وای‌فای خانه پخش می‌شوند و برای آن‌ها به اینترنت نیازی نیست.
 
 اگر نخواهید چیزی روی تلویزیون نصب کنید هم مشکلی نیست: اپِ گوشی یک آدرس می‌دهد که
 در **مرورگر تلویزیون** باز می‌کنید و فیلم همان‌جا پخش می‌شود.
@@ -52,9 +52,38 @@
 > اپ خودش تشخیص می‌دهد روی گوشی است یا تلویزیون. اگر اشتباه تشخیص داد،
 > از همان صفحه می‌توانید نقشِ دستگاه را دستی عوض کنید.
 
+## پخش از لینک
+
+در اپ گوشی، «پخش از لینک» را بزنید و آدرس را بچسبانید. اپ خودش تشخیص می‌دهد چه نوعی
+است و قبل از پخش به شما می‌گوید:
+
+| نوع لینک | چطور پخش می‌شود |
+|---|---|
+| **یوتیوب** (`youtube.com`، `youtu.be`، Shorts، Live) | با پخش‌کننده‌ی رسمی خود یوتیوب. کیفیت را یوتیوب با سرعت شبکه تنظیم می‌کند. لینک زمان‌دار (`?t=90`) از همان‌جا شروع می‌شود. |
+| **پخش زنده** (`m3u8`، `mpd`، RTSP، IPTV) | با ExoPlayer. چند کیفیت دارد و **اگر سرعت اینترنت افت کند خودش کیفیت را پایین می‌آورد** و دوباره بالا می‌برد. نوار زمان جای خود را به نشان «زنده» می‌دهد. |
+| **آدرس مستقیم ویدیو** (`mp4`، `mkv`، `avi`، …) | با موتور FFmpeg، پس تقریباً هر فرمتی کار می‌کند. |
+
+ویدیو از خود اینترنت به تلویزیون می‌رسد و از گوشی رد نمی‌شود؛ پس کیفیت به اتصال
+تلویزیون بستگی دارد نه به گوشی. لینک‌های اخیر ذخیره می‌شوند.
+
+> استخراج مستقیم فایل ویدیو از صفحه‌ی یوتیوب انجام نمی‌شود: هم خلاف قوانین یوتیوب
+> است و هم هر چند هفته می‌شکند. پخش‌کننده‌ی رسمی هم پایدارتر است و هم خودش کیفیت را
+> مدیریت می‌کند.
+
+## دو موتور پخش
+
+هیچ موتوری همه‌کار را خوب انجام نمی‌دهد، پس اپ برای هر منبع مناسب‌ترین را انتخاب
+می‌کند و شما متوجه تفاوتش نمی‌شوید:
+
+- **FFmpeg (libmpv)** برای فایل‌های شما و لینک‌های مستقیم — کانتینرهایی مثل RMVB،
+  VOB، WMV/VC-1 و OGM را هم پخش می‌کند که پخش‌کننده‌ی خود اندروید قبول نمی‌کند.
+- **ExoPlayer** برای HLS/DASH/RTSP — چون منطق تطبیق کیفیتش از هر چیزی که دستی
+  بنویسیم بهتر است.
+
 ## امکانات
 
 - **انتخاب فیلم** از حافظه‌ی گوشی، با مرورگر فایل داخلی و میان‌بر پوشه‌های پرکاربرد
+- **پخش از لینک**: یوتیوب، پخش زنده، و آدرس مستقیم (جدول بالا)
 - **زیرنویس**: فایل‌های کنار فیلم خودکار پیدا و اضافه می‌شوند (از جمله پوشه‌ی `Subs`)
 - **فرمت‌های زیرنویس**: SRT، WebVTT، ASS/SSA
 - **کدپیج**: زیرنویس‌های فارسیِ Windows-1256 خودکار تشخیص و درست خوانده می‌شوند
@@ -74,9 +103,12 @@
 
 - گوشی و تلویزیون باید روی **یک شبکه** باشند. اگر روتر «جداسازی کاربران»
   (AP/Client Isolation) روشن دارد، باید خاموش شود.
-- **فرمت‌ها**: اپ تلویزیون از ExoPlayer استفاده می‌کند و MP4/MKV با H.264 یا HEVC را
-  به‌خوبی پخش می‌کند. مرورگر تلویزیون محدودتر است (عمدتاً MP4/H.264 و WebM)؛
-  برای فایل‌های سنگین‌تر یا MKV، نسخه‌ی نصبی روی تلویزیون نتیجه‌ی بهتری می‌دهد.
+- **فرمت‌ها**: اپِ نصبی روی تلویزیون تقریباً هر فرمتی را پخش می‌کند (موتور FFmpeg).
+  مرورگر تلویزیون خیلی محدودتر است — عمدتاً MP4/H.264 و WebM، و HLS فقط روی بعضی
+  تلویزیون‌ها. برای MKV و فرمت‌های قدیمی و پخش زنده، نسخه‌ی نصبی لازم است.
+- **زیرنویس روی یوتیوب**: زیرنویس و همگام‌سازی خودمان روی پخش‌کننده‌ی یوتیوب اعمال
+  نمی‌شود؛ زیرنویس یوتیوب از خود یوتیوب کنترل می‌شود.
+- **پخش زنده** جلو و عقب ندارد؛ دکمه‌های جابه‌جایی در این حالت غیرفعال می‌شوند.
 - زیرنویس‌های **داخل** فایل MKV خوانده نمی‌شوند؛ زیرنویس باید فایل جدا باشد.
 - سرور فقط تا وقتی اپ باز است بالاست، و فقط روی شبکه‌ی محلی گوش می‌دهد.
 
@@ -88,8 +120,15 @@ flutter test                 # پارسر زیرنویس، پروتکل، و س�
 flutter build apk --release  # خروجی: build/app/outputs/flutter-apk/app-release.apk
 ```
 
-خروجی یک APK همه‌کاره است که هم روی گوشی و هم روی تلویزیون نصب می‌شود.
-برای فایل‌های کوچک‌تر (هر معماری جدا) از `flutter build apk --split-per-abi` استفاده کنید.
+به‌خاطر موتور FFmpeg، APK همه‌کاره حدود ۵۹ مگابایت می‌شود. بهتر است نسخه‌ی هر معماری
+را جدا بسازید (حدود ۳۰ مگابایت):
+
+```bash
+flutter build apk --release --split-per-abi
+```
+
+`app-arm64-v8a-release.apk` برای گوشی‌ها و باکس‌های امروزی، و
+`app-armeabi-v7a-release.apk` برای تلویزیون‌های قدیمی‌تر.
 
 نسخه‌ی release با کلید debug امضا می‌شود تا نصب دستی و به‌روزرسانی روی نسخه‌ی قبلی
 ساده باشد. اگر کلید خودتان را دارید، در `android/app/build.gradle.kts` جایگزین کنید.
@@ -120,6 +159,8 @@ flutter test test/design_preview_test.dart --tags preview --update-goldens
 | `lib/net/web_assets.dart` | The single-page browser player served to the TV |
 | `lib/net/receiver_link.dart` | TV side: auto-reconnecting control channel |
 | `lib/net/discovery.dart` | UDP beacon so the two halves find each other |
+| `lib/playback/` | The three engines behind one `PlaybackEngine` interface |
+| `lib/media/url_source.dart` | Classifies a pasted link, which picks the engine |
 | `lib/subs/` | Subtitle parsing (SRT/VTT/ASS) and rendering |
 | `lib/core/text_codec.dart` | Encoding sniffing — CP1256/CP1252/UTF-8/UTF-16 |
 | `lib/state/` | `SenderController` (phone) and `ReceiverController` (TV) |
@@ -132,6 +173,13 @@ they run and test outside a device.
 Subtitles are parsed and drawn by the app rather than handed to the platform
 player. That is what makes the sync offset exact: shifting the cue lookup time
 is the whole implementation, on the TV and in the browser alike.
+
+Playback goes through three backends behind one interface, chosen per source:
+FFmpeg/libmpv for files and direct links (widest container support), ExoPlayer
+for HLS/DASH/RTSP (its adaptive-bitrate selector is the thing that keeps a
+stream alive on a slow line), and YouTube's own embed for YouTube. The browser
+player mirrors the same split with a small `P` facade over `<video>` and the
+YouTube IFrame API, so one remote drives every combination.
 
 ## Licence
 

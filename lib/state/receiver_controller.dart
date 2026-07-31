@@ -2,16 +2,20 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:video_player/video_player.dart';
 
 import '../core/device.dart';
+import '../core/log.dart';
 import '../core/prefs.dart';
 import '../model/protocol.dart';
 import '../net/receiver_link.dart';
+import '../playback/exo_engine.dart';
+import '../playback/mpv_engine.dart';
+import '../playback/playback_engine.dart';
+import '../playback/youtube_engine.dart';
 import '../subs/subtitle_doc.dart';
 
-/// TV-side brain: owns the video player, renders subtitles with the sync
-/// offset applied, obeys the phone and reports state back to it.
+/// TV-side brain: picks a playback engine for whatever the phone sent, renders
+/// subtitles with the sync offset applied, obeys the phone and reports back.
 class ReceiverController extends ChangeNotifier {
   ReceiverController(this.facts) {
     link = ReceiverLink(deviceName: facts.name);
@@ -25,7 +29,7 @@ class ReceiverController extends ChangeNotifier {
   StreamSubscription<CastCommand>? _commandSub;
   StreamSubscription<LinkStatus>? _statusSub;
 
-  VideoPlayerController? _player;
+  PlaybackEngine? _engine;
   Timer? _ticker;
   SubtitleDoc? _doc;
   CastMedia? _media;
@@ -36,14 +40,15 @@ class ReceiverController extends ChangeNotifier {
 
   String? _subId;
   int _subDelayMs = 0;
+  double _volume = 1;
   SubtitleStyleSpec _style = const SubtitleStyleSpec();
   VideoFit _fit = VideoFit.contain;
   String? _error;
   bool _loading = false;
 
-  VideoPlayerController? get player => _player;
+  PlaybackEngine? get engine => _engine;
   CastMedia? get media => _media;
-  String? get error => _error;
+  String? get error => _error ?? _engine?.state.error;
   bool get loading => _loading;
   SubtitleStyleSpec get style => _style;
   VideoFit get fit => _fit;
@@ -52,10 +57,16 @@ class ReceiverController extends ChangeNotifier {
   List<SubtitleTrack> get subtitles => _media?.subtitles ?? const [];
   LinkStatus get status => link.status;
 
-  bool get isPlaying => _player?.value.isPlaying ?? false;
-  bool get hasVideo => _player?.value.isInitialized ?? false;
-  Duration get position => _player?.value.position ?? Duration.zero;
-  Duration get duration => _player?.value.duration ?? Duration.zero;
+  EngineState get _es => _engine?.state ?? const EngineState();
+  bool get isPlaying => _es.playing;
+  bool get hasVideo => _es.ready;
+  bool get isLive => _es.live;
+  Duration get position => _es.position;
+  Duration get duration => _es.duration;
+
+  /// Subtitles cannot be layered onto YouTube's own player, so the overlay is
+  /// suppressed there rather than floating over the wrong picture.
+  bool get supportsSubtitles => _media?.kind != MediaKind.youtube;
 
   Future<void> connect(String host) async {
     await Prefs.instance.setLastHost(host);
@@ -64,7 +75,7 @@ class ReceiverController extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
-    await _teardownPlayer();
+    await _teardown();
     await link.disconnect();
     notifyListeners();
   }
@@ -82,20 +93,19 @@ class ReceiverController extends ChangeNotifier {
           subId: c.data['sub'] as String?,
         );
       case 'play':
-        await _player?.play();
+        await _engine?.play();
         _keepAwake(true);
       case 'pause':
-        await _player?.pause();
+        await _engine?.pause();
         _keepAwake(false);
       case 'toggle':
         await togglePlay();
       case 'stop':
-        await _teardownPlayer();
+        await _teardown();
       case 'seek':
         await _seek(Duration(milliseconds: (c.data['pos'] as num?)?.toInt() ?? 0));
       case 'nudge':
-        final delta = (c.data['delta'] as num?)?.toInt() ?? 0;
-        await _seek(position + Duration(milliseconds: delta));
+        await _seek(position + Duration(milliseconds: (c.data['delta'] as num?)?.toInt() ?? 0));
       case 'sub':
         await selectSubtitle(c.data['id'] as String?);
       case 'subDelay':
@@ -111,10 +121,11 @@ class ReceiverController extends ChangeNotifier {
           notifyListeners();
         }
       case 'rate':
-        await _player?.setPlaybackSpeed((c.data['v'] as num?)?.toDouble() ?? 1);
+        await _engine?.setRate((c.data['v'] as num?)?.toDouble() ?? 1);
         notifyListeners();
       case 'volume':
-        await _player?.setVolume(((c.data['v'] as num?)?.toDouble() ?? 1).clamp(0, 1));
+        _volume = ((c.data['v'] as num?)?.toDouble() ?? 1).clamp(0, 1);
+        await _engine?.setVolume(_volume);
         notifyListeners();
       case 'fit':
         _fit = VideoFit.values.firstWhere(
@@ -127,81 +138,93 @@ class ReceiverController extends ChangeNotifier {
 
   // --- playback -----------------------------------------------------------
 
-  Future<void> _load(CastMedia media, {int startMs = 0, String? subId}) async {
-    final url = link.resolve(media.path);
-    if (url == null) return;
+  /// Chooses the backend for a source.
+  ///
+  /// Adaptive manifests go to ExoPlayer because its bitrate ladder is the
+  /// thing that keeps a stream alive on a slow line; everything else goes to
+  /// FFmpeg, which plays containers Android's own stack will not.
+  PlaybackEngine _engineFor(MediaKind kind) => switch (kind) {
+        MediaKind.youtube => YoutubeEngine(),
+        MediaKind.adaptive => ExoEngine(),
+        MediaKind.direct || MediaKind.file => MpvEngine(),
+      };
 
-    await _teardownPlayer(keepMedia: true);
+  Future<void> _load(CastMedia media, {int startMs = 0, String? subId}) async {
+    // A phone-hosted file arrives as a relative path; a remote link is
+    // already absolute and must not be resolved against the phone.
+    final url = media.isRemote ? media.path : link.resolve(media.path);
+    if (url == null || url.isEmpty) return;
+
+    await _teardown(keepMedia: true);
     _media = media;
     _error = null;
     _loading = true;
     notifyListeners();
 
-    final controller = VideoPlayerController.networkUrl(
-      Uri.parse(url),
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: false),
-    );
-    _player = controller;
+    final engine = _engineFor(media.kind)..addListener(_onEngineChanged);
+    _engine = engine;
     _startTicker();
+
     try {
-      await controller.initialize();
-      if (startMs > 0) await controller.seekTo(Duration(milliseconds: startMs));
-      await controller.play();
+      await engine.open(url, start: Duration(milliseconds: startMs));
+      await engine.setVolume(_volume);
       _keepAwake(true);
     } catch (e) {
-      _error = 'این فایل پخش نشد: $e';
-      debugPrint('load failed: $e');
+      logDebug('load failed: $e');
+      _error = 'پخش این مورد ممکن نشد';
     }
     _loading = false;
     notifyListeners();
 
-    if (subId != null) await selectSubtitle(subId);
+    if (subId != null && supportsSubtitles) await selectSubtitle(subId);
+  }
+
+  void _onEngineChanged() {
+    _refreshCue();
+    notifyListeners();
   }
 
   Future<void> _seek(Duration to) async {
-    final c = _player;
-    if (c == null || !c.value.isInitialized) return;
-    final clamped = to < Duration.zero
-        ? Duration.zero
-        : (to > c.value.duration ? c.value.duration : to);
-    await c.seekTo(clamped);
+    // Seeking a live feed with no timeline just restarts buffering.
+    if (isLive) return;
+    await _engine?.seek(to);
     _doc?.resetCursor();
     _refreshCue();
   }
 
   Future<void> togglePlay() async {
-    final c = _player;
-    if (c == null) return;
-    c.value.isPlaying ? await c.pause() : await c.play();
-    _keepAwake(c.value.isPlaying);
+    final e = _engine;
+    if (e == null) return;
+    e.state.playing ? await e.pause() : await e.play();
+    _keepAwake(!e.state.playing);
     notifyListeners();
   }
 
   Future<void> nudge(int ms) => _seek(position + Duration(milliseconds: ms));
 
-  Future<void> _teardownPlayer({bool keepMedia = false}) async {
+  Future<void> _teardown({bool keepMedia = false}) async {
     _ticker?.cancel();
     _ticker = null;
-    final c = _player;
-    _player = null;
-    if (c != null) {
-      await c.pause().catchError((_) {});
-      await c.dispose();
+    final e = _engine;
+    _engine = null;
+    if (e != null) {
+      e.removeListener(_onEngineChanged);
+      await e.release();
+      e.dispose();
     }
     _doc = null;
     currentCue.value = null;
     if (!keepMedia) {
       _media = null;
       _subId = null;
+      _error = null;
     }
     _keepAwake(false);
     link.report(snapshot());
     notifyListeners();
   }
 
-  void _keepAwake(bool on) {
-    unawaited(DeviceFacts.keepAwake(on));
-  }
+  void _keepAwake(bool on) => unawaited(DeviceFacts.keepAwake(on));
 
   // --- subtitles ----------------------------------------------------------
 
@@ -227,7 +250,7 @@ class ReceiverController extends ChangeNotifier {
       _doc = SubtitleDoc.parseBytes(Uint8List.fromList(bytes));
       _refreshCue();
     } catch (e) {
-      debugPrint('subtitle fetch failed: $e');
+      logDebug('subtitle fetch failed: $e');
       _error = 'زیرنویس بارگذاری نشد';
     }
     notifyListeners();
@@ -245,8 +268,8 @@ class ReceiverController extends ChangeNotifier {
 
   void _refreshCue() {
     final doc = _doc;
-    if (doc == null || doc.isEmpty) {
-      currentCue.value = null;
+    if (doc == null || doc.isEmpty || !supportsSubtitles) {
+      if (currentCue.value != null) currentCue.value = null;
       return;
     }
     final cue = doc.cueAt(position.inMilliseconds - _subDelayMs);
@@ -257,12 +280,12 @@ class ReceiverController extends ChangeNotifier {
 
   void _startTicker() {
     _ticker?.cancel();
-    // 20 Hz keeps the subtitles frame-accurate enough to feel instant while
-    // costing nothing; the phone only needs a state push every 4th tick.
+    // The engines push their own updates, but a subtitle still has to be
+    // looked up between them, and the phone wants a heartbeat either way.
     var beat = 0;
-    _ticker = Timer.periodic(const Duration(milliseconds: 50), (_) {
+    _ticker = Timer.periodic(const Duration(milliseconds: 100), (_) {
       _refreshCue();
-      if (++beat % 5 == 0) {
+      if (++beat % 3 == 0) {
         link.report(snapshot());
         notifyListeners();
       }
@@ -270,27 +293,27 @@ class ReceiverController extends ChangeNotifier {
   }
 
   PlayerSnapshot snapshot() {
-    final v = _player?.value;
-    final buffered = v?.buffered.isNotEmpty ?? false
-        ? v!.buffered.last.end.inMilliseconds
-        : 0;
+    final s = _es;
     return PlayerSnapshot(
       title: _media?.title ?? '',
-      positionMs: v?.position.inMilliseconds ?? 0,
-      durationMs: v?.duration.inMilliseconds ?? 0,
-      bufferedMs: buffered,
-      playing: v?.isPlaying ?? false,
-      buffering: v?.isBuffering ?? false,
-      ready: v?.isInitialized ?? false,
-      error: _error,
+      positionMs: s.position.inMilliseconds,
+      durationMs: s.duration.inMilliseconds,
+      bufferedMs: s.buffered.inMilliseconds,
+      playing: s.playing,
+      buffering: s.buffering,
+      ready: s.ready,
+      error: error,
       subId: _subId,
       subDelayMs: _subDelayMs,
-      rate: v?.playbackSpeed ?? 1,
-      volume: v?.volume ?? 1,
+      rate: 1,
+      volume: _volume,
       fit: _fit,
       style: _style,
-      subs: subtitles,
+      subs: supportsSubtitles ? subtitles : const [],
       receiver: facts.name,
+      live: s.live,
+      kind: _media?.kind ?? MediaKind.file,
+      quality: s.quality,
     );
   }
 
@@ -299,7 +322,12 @@ class ReceiverController extends ChangeNotifier {
     _ticker?.cancel();
     _commandSub?.cancel();
     _statusSub?.cancel();
-    _player?.dispose();
+    final e = _engine;
+    if (e != null) {
+      e.removeListener(_onEngineChanged);
+      unawaited(e.release());
+      e.dispose();
+    }
     currentCue.dispose();
     link.dispose();
     super.dispose();

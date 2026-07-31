@@ -13,6 +13,24 @@ const int kBeaconPort = 45454;
 /// Bumped whenever the JSON shape changes incompatibly.
 const int kProtocolVersion = 1;
 
+/// What the receiver is being asked to play, which decides both the URL
+/// handling and the playback engine.
+enum MediaKind {
+  /// A file on the phone, streamed from its built-in server. The URL is
+  /// relative and the receiver resolves it against the host.
+  file,
+
+  /// A plain remote video URL (MP4, MKV, …), played straight from source.
+  direct,
+
+  /// HLS / DASH / SmoothStreaming / RTSP. Carries several renditions, so the
+  /// player picks the bitrate itself and steps down when the network slows.
+  adaptive,
+
+  /// Played through YouTube's official embedded player.
+  youtube,
+}
+
 enum SubFormat { srt, vtt, ass, unknown }
 
 SubFormat subFormatOf(String path) {
@@ -55,35 +73,48 @@ class SubtitleTrack {
       );
 }
 
-/// The video being cast.
+/// The video being cast — a phone file, a remote link or a YouTube video.
 class CastMedia {
   const CastMedia({
     required this.id,
     required this.title,
     required this.path,
     required this.size,
+    this.kind = MediaKind.file,
     this.mime = 'video/mp4',
     this.subtitles = const [],
+    this.youtubeId,
   });
 
   final String id;
   final String title;
 
-  /// Host-side file path. Not transmitted.
+  /// For [MediaKind.file] this is the host-side path and is never transmitted;
+  /// the receiver instead sees the relative [url]. For every remote kind it is
+  /// the source URL itself, which does go over the wire.
   final String path;
   final int size;
+  final MediaKind kind;
   final String mime;
   final List<SubtitleTrack> subtitles;
+  final String? youtubeId;
 
-  String get url => '/media/$id';
+  bool get isRemote => kind != MediaKind.file;
+
+  /// What the receiver is told to open. Relative for phone-hosted files so it
+  /// resolves against whichever address the receiver reached us on; absolute
+  /// for anything already out on the network.
+  String get url => kind == MediaKind.file ? '/media/$id' : path;
 
   CastMedia copyWith({List<SubtitleTrack>? subtitles}) => CastMedia(
         id: id,
         title: title,
         path: path,
         size: size,
+        kind: kind,
         mime: mime,
         subtitles: subtitles ?? this.subtitles,
+        youtubeId: youtubeId,
       );
 
   Map<String, Object?> toJson() => {
@@ -91,7 +122,9 @@ class CastMedia {
         'title': title,
         'url': url,
         'size': size,
+        'kind': kind.name,
         'mime': mime,
+        'yt': youtubeId,
         'subs': [for (final s in subtitles) s.toJson()],
       };
 
@@ -100,7 +133,12 @@ class CastMedia {
         title: (j['title'] as String?) ?? '',
         path: (j['url'] as String?) ?? '',
         size: (j['size'] as num?)?.toInt() ?? 0,
+        kind: MediaKind.values.firstWhere(
+          (k) => k.name == j['kind'],
+          orElse: () => MediaKind.file,
+        ),
         mime: (j['mime'] as String?) ?? 'video/mp4',
+        youtubeId: j['yt'] as String?,
         subtitles: [
           for (final s in (j['subs'] as List? ?? const []))
             SubtitleTrack.fromJson((s as Map).cast<String, Object?>()),
@@ -224,6 +262,9 @@ class PlayerSnapshot {
     this.style = const SubtitleStyleSpec(),
     this.subs = const [],
     this.receiver = '',
+    this.live = false,
+    this.kind = MediaKind.file,
+    this.quality = '',
   });
 
   final String title;
@@ -242,6 +283,15 @@ class PlayerSnapshot {
   final SubtitleStyleSpec style;
   final List<SubtitleTrack> subs;
   final String receiver;
+
+  /// A stream with no fixed end. The remote hides the scrubber and shows a
+  /// LIVE badge instead of pretending there is a timeline to drag.
+  final bool live;
+
+  final MediaKind kind;
+
+  /// Human-readable note about what the engine picked, e.g. "۷۲۰p • خودکار".
+  final String quality;
 
   Duration get position => Duration(milliseconds: positionMs);
   Duration get duration => Duration(milliseconds: durationMs);
@@ -267,6 +317,9 @@ class PlayerSnapshot {
         'style': style.toJson(),
         'subs': [for (final s in subs) s.toJson()],
         'receiver': receiver,
+        'live': live,
+        'kind': kind.name,
+        'quality': quality,
       };
 
   static PlayerSnapshot fromJson(Map<String, Object?> j) => PlayerSnapshot(
@@ -294,5 +347,11 @@ class PlayerSnapshot {
             SubtitleTrack.fromJson((s as Map).cast<String, Object?>()),
         ],
         receiver: (j['receiver'] as String?) ?? '',
+        live: (j['live'] as bool?) ?? false,
+        kind: MediaKind.values.firstWhere(
+          (k) => k.name == j['kind'],
+          orElse: () => MediaKind.file,
+        ),
+        quality: (j['quality'] as String?) ?? '',
       );
 }

@@ -22,14 +22,24 @@ class RemoteTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
       children: [
-        _NowPlaying(title: snap.title, receiver: snap.receiver, buffering: snap.buffering),
+        _NowPlaying(
+          title: snap.title,
+          receiver: snap.receiver,
+          buffering: snap.buffering,
+          kind: snap.kind,
+          live: snap.live,
+          quality: snap.quality,
+        ),
         const SizedBox(height: 14),
-        const _Scrubber(),
+        if (snap.live) const _LiveBar() else const _Scrubber(),
         const SizedBox(height: 14),
         const _Transport(),
         const SizedBox(height: 16),
-        const _SubtitleCard(),
-        const SizedBox(height: 12),
+        // Our subtitle engine cannot draw over YouTube's own player.
+        if (snap.kind != MediaKind.youtube) ...[
+          const _SubtitleCard(),
+          const SizedBox(height: 12),
+        ],
         const _ExtrasCard(),
         if (snap.error != null) ...[
           const SizedBox(height: 12),
@@ -55,11 +65,21 @@ class RemoteTab extends StatelessWidget {
 }
 
 class _NowPlaying extends StatelessWidget {
-  const _NowPlaying({required this.title, required this.receiver, required this.buffering});
+  const _NowPlaying({
+    required this.title,
+    required this.receiver,
+    required this.buffering,
+    required this.kind,
+    required this.live,
+    required this.quality,
+  });
 
   final String title;
   final String receiver;
   final bool buffering;
+  final MediaKind kind;
+  final bool live;
+  final String quality;
 
   @override
   Widget build(BuildContext context) {
@@ -102,6 +122,31 @@ class _NowPlaying extends StatelessWidget {
                 Text(
                   receiver.isEmpty ? 'در انتظار پخش‌کننده…' : 'روی $receiver',
                   style: const TextStyle(color: Sea.textDim, fontSize: 12.5),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    if (live)
+                      const StatusPill(
+                        label: 'زنده',
+                        color: Sea.danger,
+                        icon: Icons.sensors_rounded,
+                      ),
+                    if (kind == MediaKind.youtube)
+                      const StatusPill(
+                        label: 'یوتیوب',
+                        color: Sea.danger,
+                        icon: Icons.smart_display_rounded,
+                      ),
+                    if (quality.isNotEmpty)
+                      StatusPill(
+                        label: '${Fmt.digits(quality)} • خودکار',
+                        color: Sea.aqua,
+                        icon: Icons.hd_rounded,
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -167,6 +212,7 @@ class _Transport extends StatelessWidget {
   Widget build(BuildContext context) {
     final sender = SenderScope.of(context);
     final playing = sender.snapshot.playing;
+    final live = sender.snapshot.live;
     return GlassPanel(
       padding: const EdgeInsets.symmetric(vertical: 14),
       child: Row(
@@ -182,13 +228,13 @@ class _Transport extends StatelessWidget {
             icon: Icons.replay_30_rounded,
             tooltip: '۳۰ ثانیه عقب',
             size: 50,
-            onPressed: () => sender.nudge(-30000),
+            onPressed: live ? null : () => sender.nudge(-30000),
           ),
           GlassIconButton(
             icon: Icons.replay_10_rounded,
             tooltip: '۱۰ ثانیه عقب',
             size: 50,
-            onPressed: () => sender.nudge(-10000),
+            onPressed: live ? null : () => sender.nudge(-10000),
           ),
           GlassIconButton(
             icon: playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
@@ -200,13 +246,13 @@ class _Transport extends StatelessWidget {
             icon: Icons.forward_10_rounded,
             tooltip: '۱۰ ثانیه جلو',
             size: 50,
-            onPressed: () => sender.nudge(10000),
+            onPressed: live ? null : () => sender.nudge(10000),
           ),
           GlassIconButton(
             icon: Icons.forward_30_rounded,
             tooltip: '۳۰ ثانیه جلو',
             size: 50,
-            onPressed: () => sender.nudge(30000),
+            onPressed: live ? null : () => sender.nudge(30000),
           ),
         ],
       ),
@@ -463,4 +509,42 @@ class _NothingPlaying extends StatelessWidget {
 
 extension _FirstOrNull<T> on Iterable<T> {
   T? get firstOrNull => isEmpty ? null : first;
+}
+
+
+/// Stands in for the scrubber on a live feed, where there is nothing to drag.
+class _LiveBar extends StatelessWidget {
+  const _LiveBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final sender = SenderScope.of(context);
+    return GlassPanel(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      child: Row(
+        children: [
+          Container(
+            width: 10,
+            height: 10,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Sea.danger,
+              boxShadow: [BoxShadow(color: Sea.danger, blurRadius: 10)],
+            ),
+          ),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text(
+              'پخش زنده — از لحظه‌ی حال',
+              style: TextStyle(color: Sea.text, fontSize: 13.5, fontWeight: FontWeight.w700),
+            ),
+          ),
+          Text(
+            Fmt.duration(sender.snapshot.position),
+            style: const TextStyle(color: Sea.textFaint, fontSize: 12.5),
+          ),
+        ],
+      ),
+    );
+  }
 }

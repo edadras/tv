@@ -2,11 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:video_player/video_player.dart';
 
 import '../../core/format.dart';
 import '../../core/theme.dart';
-import '../../model/protocol.dart';
 import '../../state/receiver_controller.dart';
 import '../../state/scope.dart';
 import '../../subs/subtitle_view.dart';
@@ -83,7 +81,7 @@ class _TvPlayerState extends State<TvPlayer> {
   @override
   Widget build(BuildContext context) {
     final receiver = ReceiverScope.of(context);
-    final controller = receiver.player;
+    final engine = receiver.engine;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -97,8 +95,8 @@ class _TvPlayerState extends State<TvPlayer> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              if (controller != null && controller.value.isInitialized)
-                _VideoSurface(controller: controller, fit: receiver.fit)
+              if (engine != null)
+                engine.surface(receiver.fit)
               else
                 const ColoredBox(color: Colors.black),
 
@@ -113,7 +111,7 @@ class _TvPlayerState extends State<TvPlayer> {
                 ),
               ),
 
-              if (receiver.loading || (controller?.value.isBuffering ?? false))
+              if (receiver.loading || receiver.engine?.state.buffering == true)
                 const Center(
                   child: SizedBox(
                     width: 54,
@@ -155,36 +153,6 @@ class _TvPlayerState extends State<TvPlayer> {
         ),
       ),
     );
-  }
-}
-
-class _VideoSurface extends StatelessWidget {
-  const _VideoSurface({required this.controller, required this.fit});
-
-  final VideoPlayerController controller;
-  final VideoFit fit;
-
-  @override
-  Widget build(BuildContext context) {
-    final player = VideoPlayer(controller);
-    return switch (fit) {
-      VideoFit.contain => Center(
-          child: AspectRatio(
-            aspectRatio: controller.value.aspectRatio,
-            child: player,
-          ),
-        ),
-      VideoFit.cover => FittedBox(
-          fit: BoxFit.cover,
-          clipBehavior: Clip.hardEdge,
-          child: SizedBox(
-            width: controller.value.size.width,
-            height: controller.value.size.height,
-            child: player,
-          ),
-        ),
-      VideoFit.stretch => player,
-    };
   }
 }
 
@@ -240,6 +208,23 @@ class _Osd extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(26, 18, 26, 20),
             child: Column(
               children: [
+                if (receiver.isLive)
+                  const Row(
+                    children: [
+                      _LiveDot(),
+                      SizedBox(width: 10),
+                      Text(
+                        'پخش زنده',
+                        style: TextStyle(
+                          color: Sea.text,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      Spacer(),
+                    ],
+                  )
+                else
                 Row(
                   children: [
                     Text(
@@ -276,7 +261,7 @@ class _Osd extends StatelessWidget {
                     GlassIconButton(
                       icon: Icons.replay_10_rounded,
                       size: 52,
-                      onPressed: () => receiver.nudge(-10000),
+                      onPressed: receiver.isLive ? null : () => receiver.nudge(-10000),
                     ),
                     const SizedBox(width: 18),
                     GlassIconButton(
@@ -292,15 +277,23 @@ class _Osd extends StatelessWidget {
                     GlassIconButton(
                       icon: Icons.forward_10_rounded,
                       size: 52,
-                      onPressed: () => receiver.nudge(10000),
+                      onPressed: receiver.isLive ? null : () => receiver.nudge(10000),
                     ),
                     const SizedBox(width: 34),
-                    _Readout(
-                      icon: Icons.subtitles_rounded,
-                      label: receiver.subId == null
-                          ? 'زیرنویس خاموش'
-                          : '${Fmt.offset(receiver.subDelayMs)} ثانیه',
-                    ),
+                    if (receiver.supportsSubtitles)
+                      _Readout(
+                        icon: Icons.subtitles_rounded,
+                        label: receiver.subId == null
+                            ? 'زیرنویس خاموش'
+                            : '${Fmt.offset(receiver.subDelayMs)} ثانیه',
+                      ),
+                    if (receiver.engine?.state.quality.isNotEmpty ?? false) ...[
+                      const SizedBox(width: 12),
+                      _Readout(
+                        icon: Icons.hd_rounded,
+                        label: '${Fmt.digits(receiver.engine!.state.quality)} • خودکار',
+                      ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -342,6 +335,43 @@ class _Readout extends StatelessWidget {
             style: const TextStyle(color: Sea.text, fontSize: 14, fontWeight: FontWeight.w700),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Pulsing dot that marks a live feed.
+class _LiveDot extends StatefulWidget {
+  const _LiveDot();
+
+  @override
+  State<_LiveDot> createState() => _LiveDotState();
+}
+
+class _LiveDotState extends State<_LiveDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: .35, end: 1).animate(_pulse),
+      child: Container(
+        width: 12,
+        height: 12,
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          color: Sea.danger,
+          boxShadow: [BoxShadow(color: Sea.danger, blurRadius: 12)],
+        ),
       ),
     );
   }
