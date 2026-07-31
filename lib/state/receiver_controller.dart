@@ -41,6 +41,7 @@ class ReceiverController extends ChangeNotifier {
   String? _subId;
   int _subDelayMs = 0;
   double _volume = 1;
+  double _rate = 1;
   SubtitleStyleSpec _style = const SubtitleStyleSpec();
   VideoFit _fit = VideoFit.contain;
   String? _error;
@@ -121,7 +122,8 @@ class ReceiverController extends ChangeNotifier {
           notifyListeners();
         }
       case 'rate':
-        await _engine?.setRate((c.data['v'] as num?)?.toDouble() ?? 1);
+        _rate = ((c.data['v'] as num?)?.toDouble() ?? 1).clamp(0.25, 4);
+        await _engine?.setRate(_rate);
         notifyListeners();
       case 'volume':
         _volume = ((c.data['v'] as num?)?.toDouble() ?? 1).clamp(0, 1);
@@ -161,17 +163,26 @@ class ReceiverController extends ChangeNotifier {
     _loading = true;
     notifyListeners();
 
-    final engine = _engineFor(media.kind)..addListener(_onEngineChanged);
-    _engine = engine;
-    _startTicker();
-
     try {
+      // Constructing the engine can fail on its own: a TV box may ship without
+      // a WebView, or libmpv may refuse to initialise. Keep it inside the
+      // guard so the screen says so instead of silently staying black.
+      final engine = _engineFor(media.kind)..addListener(_onEngineChanged);
+      _engine = engine;
+      _startTicker();
+
       await engine.open(url, start: Duration(milliseconds: startMs));
       await engine.setVolume(_volume);
+      if (_rate != 1) await engine.setRate(_rate);
       _keepAwake(true);
     } catch (e) {
       logDebug('load failed: $e');
-      _error = 'پخش این مورد ممکن نشد';
+      _error = switch (media.kind) {
+        MediaKind.youtube => 'پخش‌کننده‌ی یوتیوب روی این تلویزیون در دسترس نیست',
+        MediaKind.adaptive => 'این پخش زنده باز نشد',
+        _ => 'پخش این مورد ممکن نشد',
+      };
+      _startTicker();
     }
     _loading = false;
     notifyListeners();
@@ -305,7 +316,7 @@ class ReceiverController extends ChangeNotifier {
       error: error,
       subId: _subId,
       subDelayMs: _subDelayMs,
-      rate: 1,
+      rate: _rate,
       volume: _volume,
       fit: _fit,
       style: _style,
