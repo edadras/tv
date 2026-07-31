@@ -210,6 +210,10 @@ class WebAssets {
     started:false, cues:[], cursor:0, subId:null, delay:0, subs:[], title:'',
     fit:'contain', style:{size:34,color:0xFFFFFFFF,backdrop:.35,outline:true,bottom:6,bold:true},
     seeking:false, media:null, kind:'file',
+    // Set when the phone is converting the file as it sends it. Such a stream
+    // has no length and cannot be seeked, so a seek restarts it at an offset
+    // and we add that offset back to whatever the video element reports.
+    restart:false, offset:0, knownDur:0, srcBase:'',
   };
   let ws = null, retry = 0;
 
@@ -352,14 +356,33 @@ class WebAssets {
     play(){ onYt() ? ytPlayer.playVideo() : V.play().catch(()=>{}); },
     pause(){ onYt() ? ytPlayer.pauseVideo() : V.pause(); },
     paused(){ return onYt() ? ytPlayer.getPlayerState() !== 1 : V.paused; },
-    time(){ return onYt() ? (ytPlayer.getCurrentTime() || 0) : (V.currentTime || 0); },
+    time(){
+      if (onYt()) return ytPlayer.getCurrentTime() || 0;
+      return state.offset + (V.currentTime || 0);
+    },
     dur(){
-      const d = onYt() ? ytPlayer.getDuration() : V.duration;
-      return isFinite(d) && d > 0 ? d : 0;
+      if (onYt()) {
+        const d = ytPlayer.getDuration();
+        return isFinite(d) && d > 0 ? d : 0;
+      }
+      // A converted stream carries no duration of its own, so the phone tells
+      // us how long the film is.
+      if (state.restart && state.knownDur > 0) return state.knownDur;
+      return isFinite(V.duration) && V.duration > 0 ? V.duration : 0;
     },
     seek(sec){
       const t = Math.max(0, sec);
-      if (onYt()) ytPlayer.seekTo(t, true); else V.currentTime = t;
+      if (onYt()) { ytPlayer.seekTo(t, true); return; }
+      if (state.restart) {
+        // Restart the conversion at the new point; the phone begins encoding
+        // from there, so playback resumes from 0 with an offset of t.
+        state.offset = t;
+        V.src = state.srcBase + '?t=' + t.toFixed(3);
+        V.load();
+        V.play().catch(()=>{});
+        return;
+      }
+      V.currentTime = t;
     },
     nudge(delta){ P.seek(P.time() + delta); },
     rate(v){ onYt() ? ytPlayer.setPlaybackRate(v) : (V.playbackRate = v); },
@@ -374,6 +397,7 @@ class WebAssets {
     quality(){ return onYt() && ytPlayer.getPlaybackQuality ? ytPlayer.getPlaybackQuality() : ''; },
     // No fixed end: a live feed, so the timeline is meaningless.
     live(){ return state.media != null && P.dur() === 0 && (onYt() || V.readyState >= 1); },
+    seekable(){ return P.dur() > 0; },
   };
 
   // ---------- playback ----------
@@ -395,9 +419,22 @@ class WebAssets {
     }
 
     teardownYouTube();
-    const url = new URL(media.url, location.origin).href;
-    if (V.src !== url) { V.src = url; V.load(); }
-    if (startMs) V.currentTime = startMs / 1000;
+    state.restart = media.restart === true;
+    state.knownDur = (media.dur || 0) / 1000;
+    state.offset = 0;
+    state.srcBase = new URL(media.url, location.origin).href;
+
+    if (state.restart) {
+      // The phone is converting for us; start it wherever we were asked to.
+      const at = (startMs || 0) / 1000;
+      state.offset = at;
+      V.src = state.srcBase + (at > 0 ? '?t=' + at.toFixed(3) : '');
+      V.load();
+      toast('این فایل روی گوشی تبدیل می‌شود');
+    } else {
+      if (V.src !== state.srcBase) { V.src = state.srcBase; V.load(); }
+      if (startMs) V.currentTime = startMs / 1000;
+    }
     V.classList.add('live');
     loadSub(subId || null);
     V.play().catch(() => toast('برای شروع، دکمه‌ی پخش را بزنید'));
@@ -445,6 +482,7 @@ class WebAssets {
         case 'pause':   P.pause(); break;
         case 'toggle':  P.paused() ? P.play() : P.pause(); break;
         case 'stop':    P.pause(); teardownYouTube();
+                        state.restart=false; state.offset=0; state.knownDur=0;
                         V.removeAttribute('src'); V.load();
                         V.classList.remove('live'); $('bar').classList.add('idle');
                         state.media=null; state.cues=[]; $('subs').innerHTML='';
@@ -495,6 +533,7 @@ class WebAssets {
     if (d > 0) P.seek(d * (seek.value/1000));
     state.seeking = false;
   });
+  // Dragging a converted stream restarts the encoder, so only act on release.
   $('play').onclick = () => { P.paused() ? P.play() : P.pause(); };
   $('back').onclick = () => P.nudge(-10);
   $('fwd').onclick  = () => P.nudge(10);

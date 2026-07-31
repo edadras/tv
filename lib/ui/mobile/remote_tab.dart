@@ -30,6 +30,7 @@ class RemoteTab extends StatelessWidget {
           live: snap.live,
           quality: snap.quality,
         ),
+        const _TranscodeNotice(),
         const SizedBox(height: 14),
         if (snap.live) const _LiveBar() else const _Scrubber(),
         const SizedBox(height: 14),
@@ -544,6 +545,71 @@ class _LiveBar extends StatelessWidget {
             style: const TextStyle(color: Sea.textFaint, fontSize: 12.5),
           ),
         ],
+      ),
+    );
+  }
+}
+
+
+/// Tells the user when the phone itself is doing the decoding work, and how
+/// hard. Silent when the TV is doing its own decoding, which is the normal
+/// case and costs the phone nothing.
+class _TranscodeNotice extends StatelessWidget {
+  const _TranscodeNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    final sender = SenderScope.of(context);
+    final plan = sender.transcodePlan;
+    final toBrowser = sender.receivers.any((p) => p.kind == 'web');
+    if (plan == null || !plan.needsWork || !toBrowser) return const SizedBox.shrink();
+
+    final heavy = plan.isHeavy;
+    final tone = heavy ? Sea.danger : Sea.aqua;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Container(
+        padding: const EdgeInsets.all(13),
+        decoration: BoxDecoration(
+          color: tone.withValues(alpha: .1),
+          borderRadius: BorderRadius.circular(Sea.radiusSm),
+          border: Border.all(color: tone.withValues(alpha: .35)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              heavy ? Icons.local_fire_department_rounded : Icons.swap_horiz_rounded,
+              size: 18,
+              color: tone,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    heavy ? 'تبدیل روی گوشی' : 'تبدیل سبک روی گوشی',
+                    style: TextStyle(color: tone, fontSize: 13, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    plan.reason,
+                    style: const TextStyle(color: Sea.textDim, fontSize: 11.5, height: 1.7),
+                  ),
+                  if (heavy) ...[
+                    const SizedBox(height: 3),
+                    const Text(
+                      'اگر اپ را روی تلویزیون نصب کنید، این کار لازم نیست.',
+                      style: TextStyle(color: Sea.textFaint, fontSize: 11, height: 1.7),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

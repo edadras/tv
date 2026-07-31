@@ -17,6 +17,16 @@ Future<void> main(List<String> args) async {
     ..assetLoader = (key) async {
       final f = File(key);
       return f.existsSync() ? f.readAsBytesSync() : null;
+    }
+    // Stands in for FFmpeg: hands back the same file and reports the offset
+    // it was asked for, so the restart-on-seek path can be exercised without
+    // a phone.
+    ..transcoder = (path, start) async {
+      stdout.writeln(jsonEncode({'transcodeAt': start.inMilliseconds}));
+      return HostedStream(
+        bytes: File(path).openRead(),
+        close: () async {},
+      );
     };
   await server.start();
 
@@ -68,6 +78,12 @@ Future<void> main(List<String> args) async {
         server.publish(remote);
         stdout.writeln(jsonEncode({'linkKind': source.kind.name}));
         server.send(CastCommand.load(remote));
+      case 'transcoded':
+        // What a browser gets when the phone must convert as it sends.
+        final converted = media.copyWith(viaTranscode: true, durationMs: 20000);
+        server.publish(converted);
+        server.send(CastCommand.load(converted,
+            startMs: (msg['at'] as num?)?.toInt() ?? 0));
       case 'pause':
         server.send(CastCommand.pause);
       case 'play':

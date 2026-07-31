@@ -9,6 +9,8 @@ import '../core/device.dart';
 import '../core/log.dart';
 import '../core/prefs.dart';
 import '../media/library.dart';
+import '../media/transcode_plan.dart';
+import '../media/transcoder.dart';
 import '../media/url_source.dart';
 import '../model/protocol.dart';
 import '../net/discovery.dart';
@@ -21,12 +23,14 @@ class SenderController extends ChangeNotifier {
   SenderController(this.facts) {
     _server = HostServer(deviceName: facts.name)
       ..apkPath = facts.apkPath
-      ..assetLoader = _loadAsset;
+      ..assetLoader = _loadAsset
+      ..transcoder = _transcoder.open;
     _style = Prefs.instance.subtitleStyle;
   }
 
   final DeviceFacts facts;
   late final HostServer _server;
+  final _transcoder = Transcoder();
   Discovery? _discovery;
 
   StreamSubscription<void>? _peersSub;
@@ -40,6 +44,9 @@ class SenderController extends ChangeNotifier {
   SubtitleStyleSpec _style = const SubtitleStyleSpec();
   String? _error;
   bool _starting = false;
+
+  /// What the phone will have to do for a browser to play the current file.
+  TranscodePlan? _plan;
 
   /// Set while the user drags the scrubber so incoming state does not fight it.
   double? _scrubTarget;
@@ -57,6 +64,9 @@ class SenderController extends ChangeNotifier {
   List<ReceiverPeer> get receivers => _server.peers;
   bool get hasReceiver => _server.peers.isNotEmpty;
   List<SubtitleTrack> get subtitles => _media?.subtitles ?? const [];
+
+  /// Non-null once we know whether a browser could play the current file.
+  TranscodePlan? get transcodePlan => _plan;
 
   /// Position to draw: the drag target while scrubbing, else the real one.
   double get displayProgress => _scrubTarget ?? _snapshot.progress;
@@ -98,7 +108,8 @@ class SenderController extends ChangeNotifier {
         if (m == null) return;
         _server.sendTo(
           peer,
-          CastCommand.load(m, startMs: _snapshot.positionMs, subId: _snapshot.subId),
+          CastCommand.load(_forPeer(m, peer),
+              startMs: _snapshot.positionMs, subId: _snapshot.subId),
         );
         _server.sendTo(peer, CastCommand.subStyle(_style));
         if (_snapshot.subDelayMs != 0) {
@@ -132,6 +143,22 @@ class SenderController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The TV app plays anything, so it always gets the original bytes. Only a
+  /// browser is handed a converted stream, and only when it needs one.
+  CastMedia _forPeer(CastMedia media, ReceiverPeer peer) {
+    final needsWork = peer.kind == 'web' && (_plan?.needsWork ?? false);
+    return needsWork ? media.copyWith(viaTranscode: true) : media;
+  }
+
+  void _sendLoad(CastMedia media, {required int startMs, String? subId}) {
+    for (final peer in _server.peers) {
+      _server.sendTo(
+        peer,
+        CastCommand.load(_forPeer(media, peer), startMs: startMs, subId: subId),
+      );
+    }
+  }
+
   void _saveResume() {
     final m = _media;
     if (m == null || _snapshot.durationMs <= 0 || _snapshot.live) return;
@@ -143,6 +170,7 @@ class SenderController extends ChangeNotifier {
   @override
   void dispose() {
     _resumeSaver?.cancel();
+    _transcoder.dispose();
     _peersSub?.cancel();
     _stateSub?.cancel();
     _joinSub?.cancel();
@@ -183,8 +211,14 @@ class SenderController extends ChangeNotifier {
       mime: mimeForPath(path),
       subtitles: subs,
     );
-    _media = media;
-    _server.publish(media);
+    // Ask FFmpeg what is actually inside the file before deciding how a
+    // browser should be fed. Failing that, assume it is playable.
+    _plan = await _transcoder.planFor(path);
+    final probe = await _transcoder.probe(path);
+    final withDuration = media.copyWith(durationMs: probe.durationMs);
+
+    _media = withDuration;
+    _server.publish(withDuration);
 
     final startMs = resume ? Prefs.instance.resumeFor(path) : 0;
     final delay = Prefs.instance.subDelayFor(path);
@@ -192,16 +226,17 @@ class SenderController extends ChangeNotifier {
     _snapshot = PlayerSnapshot(
       title: media.title,
       positionMs: startMs,
+      durationMs: probe.durationMs,
       subs: subs,
       subDelayMs: delay,
       style: _style,
     );
 
-    _server.send(CastCommand.load(
-      media,
+    _sendLoad(
+      withDuration,
       startMs: startMs,
       subId: subs.isNotEmpty ? subs.first.id : null,
-    ));
+    );
     _server.send(CastCommand.subStyle(_style));
     if (delay != 0) _server.send(CastCommand.subDelay(delay));
     notifyListeners();
@@ -223,6 +258,7 @@ class SenderController extends ChangeNotifier {
       youtubeId: source.youtubeId,
     );
     _media = media;
+    _plan = null;
     _server.publish(media);
     unawaited(Prefs.instance.rememberLink(source.url));
 

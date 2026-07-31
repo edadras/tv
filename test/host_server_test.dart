@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -153,6 +154,104 @@ void main() {
     test('degrade to a 404 when the host has no asset bundle', () async {
       server.assetLoader = null;
       expect((await get('/font/regular.ttf')).statusCode, 404);
+    });
+  });
+
+  group('converted streams', () {
+    test('/stream falls back to the original when nothing needs converting', () async {
+      // A null return means "the browser can play this as-is".
+      server.transcoder = (path, start) async => null;
+      final res = await get('/stream/m1');
+      expect(res.statusCode, 200);
+      expect(res.headers.value('accept-ranges'), 'bytes');
+      expect(await body(res), videoBytes);
+    });
+
+    test('/stream pipes converted bytes out as they are produced', () async {
+      final produced = <int>[];
+      var closed = false;
+      server.transcoder = (path, start) async {
+        expect(path, media.path, reason: 'the host path, not the URL');
+        return HostedStream(
+          bytes: Stream.fromIterable([
+            [1, 2, 3],
+            [4, 5, 6],
+          ]).map((chunk) {
+            produced.addAll(chunk);
+            return chunk;
+          }),
+          close: () async => closed = true,
+        );
+      };
+
+      final res = await get('/stream/m1');
+      expect(res.statusCode, 200);
+      expect(res.headers.contentType?.mimeType, 'video/mp4');
+      // A converted stream has no length and cannot be range-requested.
+      expect(res.headers.value('accept-ranges'), 'none');
+      expect(await body(res), [1, 2, 3, 4, 5, 6]);
+      expect(produced, [1, 2, 3, 4, 5, 6]);
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(closed, isTrue, reason: 'the encoder must be stopped afterwards');
+    });
+
+    test('the ?t= offset reaches the encoder', () async {
+      Duration? asked;
+      server.transcoder = (path, start) async {
+        asked = start;
+        return HostedStream(bytes: const Stream.empty(), close: () async {});
+      };
+      await body(await get('/stream/m1?t=754.5'));
+      expect(asked, const Duration(milliseconds: 754500));
+
+      await body(await get('/stream/m1'));
+      expect(asked, Duration.zero, reason: 'no offset means start at zero');
+    });
+
+    test('a converter that throws degrades to the original file', () async {
+      server.transcoder = (path, start) async => throw StateError('no encoder');
+      final res = await get('/stream/m1');
+      expect(res.statusCode, 200);
+      expect(await body(res), videoBytes);
+    });
+
+    test('the encoder is stopped when the viewer walks away mid-stream', () async {
+      var closed = false;
+      final forever = StreamController<List<int>>();
+      server.transcoder = (path, start) async => HostedStream(
+            bytes: forever.stream,
+            close: () async {
+              closed = true;
+              if (!forever.isClosed) await forever.close();
+            },
+          );
+
+      // A raw socket so the connection can be cut mid-response, which is what
+      // a TV does when it seeks or the viewer navigates away.
+      final socket = await Socket.connect('127.0.0.1', server.port);
+      socket.write('GET /stream/m1 HTTP/1.1\r\nHost: test\r\n\r\n');
+      await socket.flush();
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      forever.add([9, 9, 9]);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      socket.destroy();
+
+      // Keep producing: the first write to the dead socket is what surfaces
+      // the disconnect.
+      for (var i = 0; i < 5 && !closed; i++) {
+        forever.add(List<int>.filled(1024, 7));
+        await Future<void>.delayed(const Duration(milliseconds: 60));
+      }
+
+      expect(closed, isTrue, reason: 'a dropped viewer must not keep the phone encoding');
+    });
+
+    test('/stream on an unknown id is a 404', () async {
+      server.transcoder = (path, start) async => null;
+      expect((await get('/stream/nope')).statusCode, 404);
     });
   });
 

@@ -84,6 +84,8 @@ class CastMedia {
     this.mime = 'video/mp4',
     this.subtitles = const [],
     this.youtubeId,
+    this.durationMs = 0,
+    this.viaTranscode = false,
   });
 
   final String id;
@@ -99,14 +101,30 @@ class CastMedia {
   final List<SubtitleTrack> subtitles;
   final String? youtubeId;
 
+  /// Known length, so a converted stream can still show a timeline even
+  /// though the bytes themselves carry no duration.
+  final int durationMs;
+
+  /// Set only on the copy sent to a browser that cannot play the original.
+  /// The phone converts as it sends, which means the result has no length and
+  /// cannot be seeked — the player restarts it at an offset instead.
+  final bool viaTranscode;
+
   bool get isRemote => kind != MediaKind.file;
 
   /// What the receiver is told to open. Relative for phone-hosted files so it
   /// resolves against whichever address the receiver reached us on; absolute
   /// for anything already out on the network.
-  String get url => kind == MediaKind.file ? '/media/$id' : path;
+  String get url => kind != MediaKind.file
+      ? path
+      : (viaTranscode ? '/stream/$id' : '/media/$id');
 
-  CastMedia copyWith({List<SubtitleTrack>? subtitles}) => CastMedia(
+  CastMedia copyWith({
+    List<SubtitleTrack>? subtitles,
+    int? durationMs,
+    bool? viaTranscode,
+  }) =>
+      CastMedia(
         id: id,
         title: title,
         path: path,
@@ -115,6 +133,8 @@ class CastMedia {
         mime: mime,
         subtitles: subtitles ?? this.subtitles,
         youtubeId: youtubeId,
+        durationMs: durationMs ?? this.durationMs,
+        viaTranscode: viaTranscode ?? this.viaTranscode,
       );
 
   Map<String, Object?> toJson() => {
@@ -125,6 +145,8 @@ class CastMedia {
         'kind': kind.name,
         'mime': mime,
         'yt': youtubeId,
+        'dur': durationMs,
+        'restart': viaTranscode,
         'subs': [for (final s in subtitles) s.toJson()],
       };
 
@@ -139,6 +161,8 @@ class CastMedia {
         ),
         mime: (j['mime'] as String?) ?? 'video/mp4',
         youtubeId: j['yt'] as String?,
+        durationMs: (j['dur'] as num?)?.toInt() ?? 0,
+        viaTranscode: (j['restart'] as bool?) ?? false,
         subtitles: [
           for (final s in (j['subs'] as List? ?? const []))
             SubtitleTrack.fromJson((s as Map).cast<String, Object?>()),

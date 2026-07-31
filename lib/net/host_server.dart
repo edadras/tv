@@ -7,6 +7,16 @@ import '../model/protocol.dart';
 import '../subs/subtitle_doc.dart';
 import 'web_assets.dart';
 
+/// Bytes being produced right now, with a way to stop producing them.
+/// Used for on-the-fly transcoding, where there is no file to seek in and the
+/// work must be abandoned as soon as the viewer goes away.
+class HostedStream {
+  HostedStream({required this.bytes, required this.close});
+
+  final Stream<List<int>> bytes;
+  final Future<void> Function() close;
+}
+
 /// A receiver currently attached to the hub.
 class ReceiverPeer {
   ReceiverPeer(this.socket, this.name, this.kind);
@@ -44,6 +54,11 @@ class HostServer {
   /// (in tests, or on a host without assets) the page falls back to whatever
   /// fonts the TV already has.
   Future<List<int>?> Function(String assetKey)? assetLoader;
+
+  /// Converts a file into something a browser can play, when it cannot play
+  /// the original. Returns null to mean "serve the original file as-is".
+  /// Injected by the app layer so this file stays free of plugins.
+  Future<HostedStream?> Function(String path, Duration start)? transcoder;
 
   final _peersController = StreamController<List<ReceiverPeer>>.broadcast();
   final _stateController = StreamController<PlayerSnapshot>.broadcast();
@@ -173,6 +188,7 @@ class HostServer {
       }
       if (path == '/app.apk') return _serveApk(req);
       if (path.startsWith('/font/')) return _serveFont(req, path.substring(6));
+      if (path.startsWith('/stream/')) return _serveStream(req, path.substring(8));
       if (path.startsWith('/media/')) return _serveMedia(req, path.substring(7));
       if (path.startsWith('/sub/')) return _serveSub(req, path.substring(5));
 
@@ -263,6 +279,60 @@ class HostServer {
       ..contentType = ContentType('application', 'vnd.android.package-archive')
       ..set('Content-Disposition', 'attachment; filename="LanCast.apk"');
     await _sendFile(req, File(path));
+  }
+
+  /// Like `/media/<id>`, but converted on the fly for a browser that cannot
+  /// open the original. The result has no length and cannot be seeked, so the
+  /// player restarts the stream at an offset instead — hence `?t=`.
+  Future<void> _serveStream(HttpRequest req, String id) async {
+    final media = _media[id];
+    final res = req.response;
+    final convert = transcoder;
+    if (media == null || convert == null) {
+      res.statusCode = HttpStatus.notFound;
+      await res.close();
+      return;
+    }
+
+    final start = Duration(
+      milliseconds:
+          ((double.tryParse(req.uri.queryParameters['t'] ?? '') ?? 0) * 1000).round(),
+    );
+
+    HostedStream? live;
+    try {
+      live = await convert(media.path, start);
+    } catch (e) {
+      logDebug('transcode refused: $e');
+    }
+
+    // Nothing to convert: fall back to the original, which keeps ranges.
+    if (live == null) return _serveMedia(req, id);
+
+    res.headers
+      ..contentType = ContentType('video', 'mp4')
+      ..set('Accept-Ranges', 'none')
+      ..set('Cache-Control', 'no-store');
+    if (req.method == 'HEAD') {
+      await live.close();
+      await res.close();
+      return;
+    }
+
+    try {
+      await res.addStream(live.bytes);
+      await res.close();
+    } catch (e) {
+      logDebug('transcode delivery stopped: $e');
+      try {
+        await res.close();
+      } catch (_) {
+        // Client already gone.
+      }
+    } finally {
+      // Whether they finished, seeked or walked away, stop burning battery.
+      await live.close();
+    }
   }
 
   Future<void> _serveMedia(HttpRequest req, String id) async {
