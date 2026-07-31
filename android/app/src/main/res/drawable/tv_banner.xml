@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android TV home-screen banner (320x180). Kept as a vector so it stays sharp
+  on 4K launchers without shipping four PNG buckets.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Navy backdrop. -->
+    <path android:pathData="M0,0h320v180h-320z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0" android:startY="0"
+                android:endX="320" android:endY="180"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF0A1330" />
+                <item android:offset="0.55" android:color="#FF060C1F" />
+                <item android:offset="1" android:color="#FF040810" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Azure bloom in the corner, echoing the in-app backdrop. -->
+    <path android:pathData="M320,0m-130,0a130,130 0,1 0,260 0a130,130 0,1 0,-260 0z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="320" android:centerY="0" android:gradientRadius="130"
+                android:type="radial">
+                <item android:offset="0" android:color="#554EA8FF" />
+                <item android:offset="1" android:color="#004EA8FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glass tile with a cast/play mark. -->
+    <path
+        android:pathData="M34,58h72a10,10 0,0 1,10 10v44a10,10 0,0 1,-10 10h-72a10,10 0,0 1,-10 -10v-44a10,10 0,0 1,10 -10z"
+        android:fillColor="#1FFFFFFF"
+        android:strokeColor="#33FFFFFF"
+        android:strokeWidth="1.5" />
+    <path
+        android:pathData="M60,74l32,16l-32,16z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="60" android:startY="74"
+                android:endX="92" android:endY="106"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF4EA8FF" />
+                <item android:offset="1" android:color="#FF6EE7F9" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- "LanCast" set as paths so no font is required. -->
+    <group android:translateX="140" android:translateY="76">
+        <!-- L -->
+        <path android:pathData="M0,0h7v22h13v7h-20z" android:fillColor="#FFEAF1FF" />
+        <!-- a -->
+        <path android:pathData="M26,10h6v19h-6v-2a8,8 0,1 1,0 -15zM26,19.5a3.5,3.5 0,1 0,-7 0a3.5,3.5 0,0 0,7 0z"
+            android:fillColor="#FFEAF1FF" />
+        <!-- n -->
+        <path android:pathData="M36,10h6v2a7,7 0,0 1,12 5v12h-6v-11a3,3 0,0 0,-6 0v11h-6z"
+            android:fillColor="#FFEAF1FF" />
+        <!-- C -->
+        <path android:pathData="M78,0a15,15 0,1 0,0 29a15,15 0,0 0,13 -8h-8a8,8 0,1 1,0 -13h8a15,15 0,0 0,-13 -8z"
+            android:fillColor="#FF4EA8FF" />
+        <!-- a -->
+        <path android:pathData="M104,10h6v19h-6v-2a8,8 0,1 1,0 -15zM104,19.5a3.5,3.5 0,1 0,-7 0a3.5,3.5 0,0 0,7 0z"
+            android:fillColor="#FF6EE7F9" />
+        <!-- s -->
+        <path android:pathData="M114,23h6a2,2 0,0 0,4 -0.5c0,-3 -10,-1 -10,-7a6.5,6.5 0,0 1,13 -0.5h-6a1.8,1.8 0,0 0,-3.4 0.4c0,2.6 10,0.8 10,7.1a7,7 0,0 1,-13.6 0.5z"
+            android:fillColor="#FF6EE7F9" />
+        <!-- t -->
+        <path android:pathData="M132,4h6v6h5v6h-5v13h-6v-13h-4v-6h4z" android:fillColor="#FF6EE7F9" />
+    </group>
+</vector>

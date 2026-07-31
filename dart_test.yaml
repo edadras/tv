@@ -1,0 +1,8 @@
+# The design previews render the UI to PNG for review; they are a tool, not a
+# regression suite, so `flutter test` skips them by default. Run them with:
+#
+#   flutter test test/design_preview_test.dart --update-goldens --tags preview
+#
+tags:
+  preview:
+    skip: "design preview — run explicitly with --tags preview --update-goldens"
